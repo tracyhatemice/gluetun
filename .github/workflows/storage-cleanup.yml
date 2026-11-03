@@ -1,0 +1,99 @@
+name: Storage Cleanup
+
+on:
+  workflow_run:
+    workflows: [GHCR image]
+    types: [completed]
+  # By hand, a dry run unless unticked.
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Only log what would be deleted"
+        type: boolean
+        default: true
+
+# The image cleanup action is not safe to run twice at once against the same
+# package.
+concurrency:
+  group: storage-cleanup
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  artifacts:
+    if: github.repository == 'tracyhatemice/gluetun'
+    runs-on: ubuntu-latest
+    permissions:
+      # Read runs, delete artifacts.
+      actions: write
+    steps:
+      - name: Delete artifacts of successful publish runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+        run: |
+          set -euo pipefail
+
+          # Listed in full before anything is deleted, so a deletion cannot
+          # shift the pages still to be read.
+          list="$RUNNER_TEMP/artifacts.tsv"
+          gh api "repos/$REPO/actions/artifacts?per_page=100" --paginate \
+            --jq '.artifacts[] | select(.expired | not) | [.id, .name, .size_in_bytes, .workflow_run.id] | @tsv' \
+            > "$list"
+
+          # Each run's workflow file and conclusion, looked up once per run.
+          # A run still in progress has a null conclusion and keeps its
+          # artifacts, as does a run that can no longer be looked up.
+          declare -A verdict
+          deleted=0 kept=0 freed=0
+          while IFS=$'\t' read -r id name size run; do
+            if [ -z "${verdict[$run]+set}" ]; then
+              verdict[$run]="$(gh api "repos/$REPO/actions/runs/$run" --jq '"\(.path) \(.conclusion)"' 2>/dev/null || echo unknown)"
+            fi
+            if [ "${verdict[$run]}" != ".github/workflows/ghcr-image.yml success" ]; then
+              kept=$((kept + 1))
+              continue
+            fi
+            if [ "$DRY_RUN" = true ]; then
+              echo "would delete $name ($size bytes) from run $run"
+            else
+              gh api -X DELETE "repos/$REPO/actions/artifacts/$id"
+              echo "deleted $name ($size bytes) from run $run"
+            fi
+            deleted=$((deleted + 1))
+            freed=$((freed + size))
+          done < "$list"
+
+          verb=$([ "$DRY_RUN" = true ] && echo "Would delete" || echo "Deleted")
+          summary="$verb $deleted artifacts ($((freed / 1048576)) MB); kept $kept."
+          echo "$summary"
+          echo "$summary" >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    if: github.repository == 'tracyhatemice/gluetun'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f # v1.2.2
+        with:
+          package: gluetun
+          # Always kept, whatever their age or count.
+          exclude-tags: latest,master,v*
+          # The newest other tagged images, such as sha-<commit> builds, kept
+          # to roll back to.
+          keep-n-tagged: 10
+          delete-untagged: true
+          # Images left broken by a cancelled push or an interrupted cleanup.
+          delete-ghost-images: true
+          delete-partial-images: true
+          # Leave alone anything a build still in progress may be pushing: its
+          # platform manifest exists, untagged, for a while before the index
+          # that tags it. Anything younger waits for the next run.
+          older-than: 1 hour
+          # Automatic runs delete; a manual run is a dry run unless unticked.
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run }}
+          # Report any image left with missing platforms.
+          validate: true
