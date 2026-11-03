@@ -12,6 +12,15 @@ import (
 	"strings"
 )
 
+func logLeakCheck(ctx context.Context, client *http.Client, logger Logger) {
+	report, err := leakCheck(ctx, client)
+	if err != nil {
+		logger.Warnf("running leak check: %s", err)
+		return
+	}
+	logger.Infof("leak check report: %s", report)
+}
+
 func leakCheck(ctx context.Context, client *http.Client) (report string, err error) {
 	const sessionLength = 40
 	session := generateRandomString(sessionLength)

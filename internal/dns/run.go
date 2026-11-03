@@ -62,11 +62,8 @@ func (l *Loop) Run(ctx context.Context, done chan<- struct{}) {
 
 		l.userTrigger = false
 
-		report, err := leakCheck(ctx, l.client)
-		if err != nil {
-			l.logger.Warnf("running leak check: %s", err)
-		} else {
-			l.logger.Infof("leak check report: %s", report)
+		if *settings.LeakCheck {
+			logLeakCheck(ctx, l.client, l.logger)
 		}
 
 		exitLoop := l.runWait(ctx, runError)

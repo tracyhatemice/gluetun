@@ -59,6 +59,10 @@ type DNS struct {
 	// from /etc/resolv.conf. For example if you use your own DNS server at 55.66.77.88,
 	// then you can set this to 55.66.77.88/32.
 	PublicNameserverCIDRsAsLocal []netip.Prefix `json:"public_nameserver_cidrs_as_local"`
+	// LeakCheck is true if a DNS leak check should be run each time
+	// the DNS is ready. It defaults to true and cannot be nil in the
+	// internal state.
+	LeakCheck *bool `json:"leak_check"`
 }
 
 func (d DNS) validate() (err error) {
@@ -149,6 +153,7 @@ func (d *DNS) Copy() (copied DNS) {
 		UpstreamPlainAddresses:       gosettings.CopySlice(d.UpstreamPlainAddresses),
 		PublicNamesAsLocal:           gosettings.CopySlice(d.PublicNamesAsLocal),
 		PublicNameserverCIDRsAsLocal: gosettings.CopySlice(d.PublicNameserverCIDRsAsLocal),
+		LeakCheck:                    gosettings.CopyPointer(d.LeakCheck),
 	}
 }
 
@@ -167,6 +172,7 @@ func (d *DNS) overrideWith(other DNS) {
 	d.PublicNamesAsLocal = gosettings.OverrideWithSlice(d.PublicNamesAsLocal, other.PublicNamesAsLocal)
 	d.PublicNameserverCIDRsAsLocal = gosettings.OverrideWithSlice(d.PublicNameserverCIDRsAsLocal,
 		other.PublicNameserverCIDRsAsLocal)
+	d.LeakCheck = gosettings.OverrideWithPointer(d.LeakCheck, other.LeakCheck)
 }
 
 func (d *DNS) setDefaults() {
@@ -185,6 +191,7 @@ func (d *DNS) setDefaults() {
 	d.Blacklist.setDefaults()
 	d.PublicNamesAsLocal = gosettings.DefaultSlice(d.PublicNamesAsLocal, []string{})
 	d.PublicNameserverCIDRsAsLocal = gosettings.DefaultSlice(d.PublicNameserverCIDRsAsLocal, []netip.Prefix{})
+	d.LeakCheck = gosettings.DefaultPointer(d.LeakCheck, true)
 }
 
 func defaultDNSProviders() []string {
@@ -199,6 +206,7 @@ func (d DNS) String() string {
 
 func (d DNS) toLinesNode() (node *gotree.Node) {
 	node = gotree.New("DNS settings:")
+	node.Appendf("Leak check: %s", gosettings.BoolToYesNo(d.LeakCheck))
 
 	if !*d.ServerEnabled {
 		plainServers := node.Append("Plain DNS servers to use directly:")
@@ -294,6 +302,11 @@ func (d *DNS) read(r *reader.Reader) (err error) {
 	d.PublicNamesAsLocal = r.CSV("DNS_PUBLIC_NAMES_AS_LOCAL")
 
 	d.PublicNameserverCIDRsAsLocal, err = r.CSVNetipPrefixes("DNS_PUBLIC_NAMESERVER_CIDRS_AS_LOCAL")
+	if err != nil {
+		return err
+	}
+
+	d.LeakCheck, err = r.BoolPtr("DNS_LEAK_CHECK")
 	if err != nil {
 		return err
 	}
